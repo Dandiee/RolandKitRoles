@@ -299,6 +299,11 @@ dotnet publish src/KitRoles -c Release -o publish
 Release builds are self-contained single-file `win-x64` (~65 MB). A post-publish target deletes the macOS native
 library that DryWetMIDI ships as content.
 
+Releases: `.github/workflows/release.yml` runs when a tag `v*` is pushed (`git tag v0.2.0`,
+`git push origin v0.2.0`). It publishes with `-p:Version=<tag without v>` on a Windows runner and creates a GitHub
+Release with `KitRoles.exe` attached and generated notes. The README links to
+`releases/latest/download/KitRoles.exe`, so the asset name must stay `KitRoles.exe`.
+
 ## 8. Python tools (`tools/`)
 
 Written for investigation; they work standalone with plain Python 3 (ctypes WinMM, no packages).

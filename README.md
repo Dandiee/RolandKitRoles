@@ -54,7 +54,7 @@ with the same tuning, volume and effect settings the kit's author picked.
 
 1. Back up your module to an SD card first, using the V51 backup function. The tool keeps its own backups, but a full
    module backup is the safest starting point.
-2. Download `KitRoles.exe` from the [releases](https://github.com/Dandiee/RolandKitRoles/releases) and run it.
+2. Download [the latest KitRoles.exe](https://github.com/Dandiee/RolandKitRoles/releases/latest/download/KitRoles.exe) (all versions are on the [releases page](https://github.com/Dandiee/RolandKitRoles/releases)) and run it.
    No installation needed. It stores its data in a `data` folder next to the exe, so keep them together.
 3. The tool connects and reads the header of all 200 kits (about 15 seconds).
 4. Check the kits you care about (the group checkboxes help) and run **Deep scan checked**. This reads everything
