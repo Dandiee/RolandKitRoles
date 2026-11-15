@@ -36,9 +36,9 @@
             <StackPanel Orientation="Horizontal">
                 <Button Style="{StaticResource IconButton}" Tag="&#xE703;" Content="Connect" Command="{Binding ConnectCommand}" />
                 <Button Style="{StaticResource IconButton}" Tag="&#xE72C;" Content="Refresh" Command="{Binding RefreshCommand}"
-                        ToolTip="Reads every kit's header (~15 s): names, categories, what changed since the deep scan" />
-                <Button Style="{StaticResource IconButton}" Tag="&#xE8B7;" Content="Deep scan checked" Command="{Binding DeepScanCommand}"
-                        ToolTip="Reads everything of the checked kits (~8 s per kit)" />
+                        ToolTip="Reads every kit's header (~15 s) and scans kits that are new or changed" />
+                <Button Style="{StaticResource IconButton}" Tag="&#xE8B7;" Content="Rescan checked" Command="{Binding RescanCommand}"
+                        ToolTip="Scans the checked kits again, e.g. after editing sounds on the module (~0.4 s per kit)" />
             </StackPanel>
         </DockPanel>
 
@@ -92,8 +92,6 @@
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
             </ItemsControl>
-            <Button Style="{StaticResource IconButton}" Tag="&#xE895;" Content="Check kits needing a deep scan"
-                    Command="{Binding SelectNeedsScanCommand}" HorizontalAlignment="Left" />
         </DockPanel>
 
         <!-- Kit list + details -->
@@ -123,17 +121,12 @@
                                         <Style TargetType="TextBlock">
                                             <Setter Property="Text" Value="&#xE9CE;" />
                                             <Setter Property="Foreground" Value="Gray" />
-                                            <Setter Property="ToolTip" Value="Not deep scanned" />
+                                            <Setter Property="ToolTip" Value="Not scanned (blank user kit)" />
                                             <Style.Triggers>
                                                 <DataTrigger Binding="{Binding State}" Value="UpToDate">
                                                     <Setter Property="Text" Value="&#xE73E;" />
                                                     <Setter Property="Foreground" Value="#5AC85A" />
-                                                    <Setter Property="ToolTip" Value="Deep scanned, header unchanged" />
-                                                </DataTrigger>
-                                                <DataTrigger Binding="{Binding State}" Value="Changed">
-                                                    <Setter Property="Text" Value="&#xE7BA;" />
-                                                    <Setter Property="Foreground" Value="#E0A030" />
-                                                    <Setter Property="ToolTip" Value="Changed on the module since the deep scan" />
+                                                    <Setter Property="ToolTip" Value="Scanned" />
                                                 </DataTrigger>
                                                 <DataTrigger Binding="{Binding State}" Value="Error">
                                                     <Setter Property="Text" Value="&#xEA39;" />
@@ -168,7 +161,7 @@
                     </TextBlock>
                     <TextBlock Text="{Binding SubName}" Foreground="Gray" TextTrimming="CharacterEllipsis" />
                     <TextBlock Foreground="Gray" FontSize="11"
-                               Text="{Binding ScannedAt, StringFormat='Deep scanned {0:yyyy-MM-dd HH:mm}', TargetNullValue='Not deep scanned'}" />
+                               Text="{Binding ScannedAt, StringFormat='Scanned {0:yyyy-MM-dd HH:mm}', TargetNullValue='Not scanned'}" />
                 </StackPanel>
                 <DataGrid ItemsSource="{Binding Pads}" AutoGenerateColumns="False" IsReadOnly="True"
                           HeadersVisibility="Column" GridLinesVisibility="None">

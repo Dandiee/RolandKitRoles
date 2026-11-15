@@ -10,16 +10,15 @@ namespace KitRoles.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    private static readonly string[] ProbeBlocks = ["A1", "A2", "A21"]; // kick, snare, AUX1 layer A
-
-    /// <summary>Every block an apply can touch: AUX unit commons, layers and pads. Undo restores these.</summary>
-    private static readonly string[] AuxBlocks =
-        RolePlanner.Aux.SelectMany(p => new[] { $"uc{p.Head + 1}", $"uc{p.Rim + 1}", $"pad{p.Pad}" }
-            .Concat("ABC".SelectMany(l => new[] { $"{l}{p.Head + 1}", $"{l}{p.Rim + 1}" }))).ToArray();
-
     private V51Client? _client;
     private CancellationTokenSource? _cts;
-    private readonly Dictionary<int, IndexEntry> _index = KitCache.LoadIndex();
+    private readonly Dictionary<int, KitInfo> _kits = KitCache.LoadKits();
+
+    /// <summary>
+    /// The V51 (2.10) answers reads of a few bytes inside a block, which is ~25x faster than whole blocks.
+    /// This is not documented, so the first unanswered partial read switches to whole-block reads for the session.
+    /// </summary>
+    private bool _partialReads = true;
 
     public ObservableCollection<KitRowViewModel> Kits { get; } = [];
     public IReadOnlyList<KitGroupViewModel> Groups { get; }
@@ -32,11 +31,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private double _progress;
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(RefreshCommand), nameof(DeepScanCommand), nameof(ApplyCommand), nameof(UndoCommand))]
+    [NotifyCanExecuteChangedFor(nameof(RefreshCommand), nameof(RescanCommand), nameof(ApplyCommand), nameof(UndoCommand))]
     private bool _isConnected;
 
     [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(RefreshCommand), nameof(DeepScanCommand), nameof(ApplyCommand), nameof(UndoCommand),
+    [NotifyCanExecuteChangedFor(nameof(RefreshCommand), nameof(RescanCommand), nameof(ApplyCommand), nameof(UndoCommand),
         nameof(ConnectCommand), nameof(CancelCommand))]
     private bool _isBusy;
 
@@ -45,8 +44,7 @@ public partial class MainViewModel : ObservableObject
         for (int n = 1; n <= KitMap.KitCount; n++)
         {
             var row = new KitRowViewModel(n);
-            if (KitCache.Load(n) is { } snapshot) row.ApplySnapshot(snapshot);
-            else if (_index.TryGetValue(n, out var entry)) row.Category = entry.Category;
+            if (_kits.TryGetValue(n, out var info)) row.Apply(info);
             row.PropertyChanged += OnKitChanged;
             Kits.Add(row);
         }
@@ -67,15 +65,15 @@ public partial class MainViewModel : ObservableObject
         if (e.PropertyName is not (nameof(KitRowViewModel.IsChecked) or nameof(KitRowViewModel.Category))) return;
         foreach (var g in Groups) g.Refresh();
         Selection = $"{Kits.Count(k => k.IsChecked)} kits checked";
-        DeepScanCommand.NotifyCanExecuteChanged();
+        RescanCommand.NotifyCanExecuteChanged();
         ApplyCommand.NotifyCanExecuteChanged();
         if (e.PropertyName == nameof(KitRowViewModel.IsChecked)) UpdatePlan((KitRowViewModel)sender!);
     }
 
     private bool CanRun() => IsConnected && !IsBusy;
     private bool CanConnect() => !IsBusy;
-    private bool CanDeepScan() => CanRun() && Kits.Any(k => k.IsChecked);
-    private bool CanApply() => CanDeepScan() && Roles.Any(r => r.Role != Role.Keep);
+    private bool CanRunChecked() => CanRun() && Kits.Any(k => k.IsChecked);
+    private bool CanApply() => CanRunChecked() && Roles.Any(r => r.Role != Role.Keep);
 
     [RelayCommand(CanExecute = nameof(CanConnect))]
     private async Task ConnectAsync()
@@ -88,87 +86,97 @@ public partial class MainViewModel : ObservableObject
         if (IsConnected) await RefreshAsync();
     }
 
-    /// <summary>Reads all kit headers (~15 s); probes the category of kits that are new or changed.</summary>
+    /// <summary>Reads all kit headers (~15 s) and scans every kit that is new or whose header changed.</summary>
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task RefreshAsync()
     {
-        await RunAsync("Reading header of", Kits, async (row, ct) =>
+        await RunAsync("Checking", Kits, async (row, ct) =>
         {
-            row.ApplyHeader(await ReadAsync(KitMap.KitBase(row.Number), KitMap.Common.Size, ct));
-            if (row.State == KitState.UpToDate) return; // category known from the deep scan
-            if (_index.TryGetValue(row.Number, out var known) && known.Header == row.Header)
-                row.Category = known.Category;
-            else
-                row.Category = await ProbeAsync(row, ct);
-            _index[row.Number] = new IndexEntry(row.Header, row.Category);
+            var header = await ReadAsync(KitMap.Address(row.Number, "common"), KitMap.Common.Size, ct);
+            var hex = Convert.ToHexStringLower(header);
+            if (_kits.TryGetValue(row.Number, out var known) && known.Header == hex) { row.Apply(known); return; }
+            if (KitInfo.DecodeName(header, 0, 16) == "User Kit")
+            {
+                _kits.Remove(row.Number);
+                row.ApplyHeader(header);
+                return;
+            }
+            Store(row, await ScanAsync(row.Number, hex, ct));
         });
-        KitCache.SaveIndex(_index);
+        KitCache.SaveKits(_kits);
     }
 
-    [RelayCommand(CanExecute = nameof(CanDeepScan))]
-    private async Task DeepScanAsync()
+    /// <summary>Scans the checked kits again, e.g. after editing sounds on the module.</summary>
+    [RelayCommand(CanExecute = nameof(CanRunChecked))]
+    private async Task RescanAsync()
     {
-        await RunAsync("Deep scanning", Checked(), async (row, ct) => Store(row, await DeepReadAsync(row.Number, ct)));
-        KitCache.SaveIndex(_index);
+        await RunAsync("Scanning", Checked(), async (row, ct) =>
+        {
+            var header = await ReadAsync(KitMap.Address(row.Number, "common"), KitMap.Common.Size, ct);
+            Store(row, await ScanAsync(row.Number, Convert.ToHexStringLower(header), ct));
+        });
+        KitCache.SaveKits(_kits);
     }
 
     /// <summary>
-    /// For each checked kit: re-read it live, back it up, write the changed AUX blocks, read them back to verify.
+    /// For each checked kit: scan it fresh, read the blocks involved, back up the AUX blocks that will change,
+    /// write them and verify each by reading it back.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanApply))]
     private async Task ApplyAsync()
     {
         var kits = Checked();
         var roles = string.Join(", ", Roles.Where(r => r.Role != Role.Keep).Select(r => $"{r.Label} = {r.Role.Label()}"));
-        if (!Confirm($"Write {roles} to {kits.Count} kits?\n\nEach kit is backed up first; use Undo to restore.")) return;
+        if (!Confirm($"Write {roles} to {kits.Count} kits?\n\nThe changed pads are backed up first; use Undo to restore.")) return;
 
         var session = KitCache.NewBackupSession();
         await RunAsync("Applying to", kits, async (row, ct) =>
         {
-            var fresh = await DeepReadAsync(row.Number, ct);
-            KitCache.SaveBackup(session, fresh);
-            var blocks = Roles.Select((r, i) => RolePlanner.Plan(fresh, i, r.Role))
-                .OfType<PadChange>().SelectMany(c => c.Blocks).ToList();
-            foreach (var (name, stored) in await WriteKitAsync(row.Number, blocks, backup: fresh))
-                fresh.Blocks[name] = Convert.ToHexStringLower(stored);
-            Store(row, fresh);
+            var header = Convert.ToHexStringLower(await ReadAsync(KitMap.Address(row.Number, "common"), KitMap.Common.Size, ct));
+            var info = await ScanAsync(row.Number, header, ct);
+            var plans = Roles.Select((r, i) => RolePlanner.Choose(info, i, r.Role)).OfType<PadPlan>()
+                .Where(p => !p.AlreadyDone).ToList();
+            if (plans.Count > 0)
+            {
+                var current = new Dictionary<string, byte[]>();
+                foreach (var name in plans.SelectMany(p => p.Target.Blocks.Concat(p.Source.Blocks)).Distinct())
+                    current[name] = await ReadBlockAsync(row.Number, name, ct);
+
+                var writes = plans.SelectMany(p => RolePlanner.Build(p, name => current[name]))
+                    .Where(kv => !kv.Value.AsSpan().SequenceEqual(current[kv.Key])).ToList();
+                var backup = Snapshot(row.Number, writes.Select(w => w.Key), current);
+                KitCache.SaveBackup(session, backup);
+                await WriteKitAsync(row.Number, writes, backup);
+                info = await ScanAsync(row.Number, header, ct);
+            }
+            Store(row, info);
         });
-        KitCache.SaveIndex(_index);
+        KitCache.SaveKits(_kits);
     }
 
-    /// <summary>Restores the AUX pads of the most recent apply from its backup, then drops that backup.</summary>
+    /// <summary>Restores the pads changed by the most recent apply from its backup, then drops that backup.</summary>
     [RelayCommand(CanExecute = nameof(CanRun))]
     private async Task UndoAsync()
     {
         var (session, backups) = KitCache.LoadLastBackup();
         if (session is null || backups.Count == 0) { Status = "Nothing to undo."; return; }
-        if (!Confirm($"Restore the AUX pads of {backups.Count} kits to their state before the apply of {session}?")) return;
+        if (!Confirm($"Restore the pads of {backups.Count} kits to their state before the apply of {session}?")) return;
 
         var byKit = backups.ToDictionary(b => b.Kit);
         bool ok = true;
         await RunAsync("Restoring", Kits.Where(k => byKit.ContainsKey(k.Number)).ToList(), async (row, ct) =>
         {
             var backup = byKit[row.Number];
-            var current = KitCache.Load(row.Number) ?? backup;
-            var differing = new List<KeyValuePair<string, byte[]>>();
-            foreach (var name in AuxBlocks)
-            {
-                var live = await ReadBlockAsync(row.Number, name, ct);
-                current.Blocks[name] = Convert.ToHexStringLower(live);
-                if (!live.AsSpan().SequenceEqual(backup.Block(name))) differing.Add(new(name, backup.Block(name)));
-            }
-            foreach (var (name, stored) in await WriteKitAsync(row.Number, differing, backup: current))
-                current.Blocks[name] = Convert.ToHexStringLower(stored);
-            Store(row, current);
+            var live = new Dictionary<string, byte[]>();
+            foreach (var name in backup.Blocks.Keys) live[name] = await ReadBlockAsync(row.Number, name, ct);
+            var writes = backup.Blocks.Keys.Select(n => new KeyValuePair<string, byte[]>(n, backup.Block(n)))
+                .Where(kv => !kv.Value.AsSpan().SequenceEqual(live[kv.Key])).ToList();
+            await WriteKitAsync(row.Number, writes, Snapshot(row.Number, live.Keys, live));
+            var header = await ReadAsync(KitMap.Address(row.Number, "common"), KitMap.Common.Size, ct);
+            Store(row, await ScanAsync(row.Number, Convert.ToHexStringLower(header), ct));
         }, () => ok = false);
+        KitCache.SaveKits(_kits);
         if (ok) KitCache.DeleteBackup(session);
-    }
-
-    /// <summary>Checks every non-blank kit whose deep scan is missing or outdated.</summary>
-    [RelayCommand]
-    private void SelectNeedsScan()
-    {
-        foreach (var k in Kits) k.IsChecked = !k.IsBlank && k.State != KitState.UpToDate;
     }
 
     [RelayCommand(CanExecute = nameof(IsBusy))]
@@ -176,11 +184,10 @@ public partial class MainViewModel : ObservableObject
 
     private List<KitRowViewModel> Checked() => Kits.Where(k => k.IsChecked).ToList();
 
-    private void Store(KitRowViewModel row, KitSnapshot snapshot)
+    private void Store(KitRowViewModel row, KitInfo info)
     {
-        KitCache.Save(snapshot);
-        row.ApplySnapshot(snapshot);
-        _index[row.Number] = new IndexEntry(row.Header, row.Category);
+        _kits[row.Number] = info;
+        row.Apply(info);
         UpdatePlan(row);
     }
 
@@ -192,47 +199,72 @@ public partial class MainViewModel : ObservableObject
     private void UpdatePlan(KitRowViewModel row)
     {
         if (!row.IsChecked || Roles.All(r => r.Role == Role.Keep)) { row.Plan = ""; return; }
-        if (row.Snapshot is null) { row.Plan = "Deep scan needed for a preview"; return; }
-        row.Plan = string.Join(" · ", Roles.Select((r, i) => RolePlanner.Plan(row.Snapshot, i, r.Role))
-            .OfType<PadChange>().Select(c => c.Text));
+        if (row.Info is null) { row.Plan = "Not scanned"; return; }
+        row.Plan = string.Join(" · ", Roles.Select((r, i) => RolePlanner.Choose(row.Info, i, r.Role))
+            .OfType<PadPlan>().Select(p => p.Text));
     }
 
-    private async Task<KitSnapshot> DeepReadAsync(int kit, CancellationToken ct)
+    private static KitSnapshot Snapshot(int kit, IEnumerable<string> names, Dictionary<string, byte[]> blocks) => new()
     {
-        var snapshot = new KitSnapshot { Kit = kit, ScannedAt = DateTime.Now };
-        foreach (var block in KitMap.KitBlocks)
-            snapshot.Blocks[block.Name] =
-                Convert.ToHexStringLower(await ReadAsync(KitMap.KitBase(kit) + block.Offset, block.Size, ct));
-        return snapshot;
+        Kit = kit,
+        ScannedAt = DateTime.Now,
+        Blocks = names.ToDictionary(n => n, n => Convert.ToHexStringLower(blocks[n])),
+    };
+
+    /// <summary>Reads instrument, bank and V-EDIT 2 of all 84 layers (~0.35 s with partial reads).</summary>
+    private async Task<KitInfo> ScanAsync(int kit, string header, CancellationToken ct)
+    {
+        var info = new KitInfo { Header = header, ScannedAt = DateTime.Now };
+        for (int unit = 0; unit < 28; unit++)
+            for (int layer = 0; layer < 3; layer++)
+            {
+                var name = KitMap.LayerBlock(unit, layer);
+                var head = await ReadPartAsync(kit, name, 0, 9, ct);
+                var vEdit2 = await ReadPartAsync(kit, name, LayerInfo.VEdit2Offset, 4, ct);
+                info.Layers.Add(LayerInfo.From(head, vEdit2));
+            }
+        return info;
     }
+
+    private async Task<byte[]> ReadPartAsync(int kit, string block, int offset, int length, CancellationToken ct)
+    {
+        if (_partialReads)
+        {
+            if (await _client!.ReadAsync(KitMap.Address(kit, block) + offset, length, ct) is { } part) return part;
+            _partialReads = false;
+        }
+        return (await ReadBlockAsync(kit, block, ct))[offset..(offset + length)];
+    }
+
+    private Task<byte[]> ReadBlockAsync(int kit, string name, CancellationToken ct = default) =>
+        ReadAsync(KitMap.Address(kit, name), KitMap.Blocks[name].Size, ct);
+
+    private async Task<byte[]> ReadAsync(int address, int size, CancellationToken ct) =>
+        await _client!.ReadAsync(address, size, ct)
+        ?? throw new TimeoutException($"No answer from the module (address {address:X}).");
 
     /// <summary>
-    /// Writes the blocks of one kit and verifies each by reading it back; returns what the module actually stored.
-    /// Not cancellable, so a kit is never left half-written. On failure, blocks already written are put back
-    /// from <paramref name="backup"/> before the error is reported.
+    /// Writes the blocks of one kit and verifies each by reading it back. Not cancellable, so a kit is never left
+    /// half-written. On failure, blocks already written are put back from <paramref name="backup"/>.
     /// </summary>
-    private async Task<Dictionary<string, byte[]>> WriteKitAsync(int kit, IReadOnlyList<KeyValuePair<string, byte[]>> blocks,
-        KitSnapshot backup)
+    private async Task WriteKitAsync(int kit, IReadOnlyList<KeyValuePair<string, byte[]>> blocks, KitSnapshot backup)
     {
-        var stored = new Dictionary<string, byte[]>();
+        var touched = new List<string>();
         try
         {
             foreach (var (name, data) in blocks)
             {
-                stored[name] = data; // mark as touched before writing, so a failure also rolls this block back
-                await _client!.WriteAsync(BlockAddress(kit, name), data);
-                var back = await ReadBlockAsync(kit, name);
-                if (!Matches(name, data, back))
+                touched.Add(name);
+                await _client!.WriteAsync(KitMap.Address(kit, name), data);
+                if (!Matches(name, data, await ReadBlockAsync(kit, name)))
                     throw new InvalidOperationException($"Verification failed for block {name}: the module holds different data.");
-                stored[name] = back;
             }
-            return stored;
         }
         catch (Exception ex)
         {
             try
             {
-                foreach (var name in stored.Keys) await _client!.WriteAsync(BlockAddress(kit, name), backup.Block(name));
+                foreach (var name in touched) await _client!.WriteAsync(KitMap.Address(kit, name), backup.Block(name));
             }
             catch (Exception restoreError)
             {
@@ -249,30 +281,9 @@ public partial class MainViewModel : ObservableObject
     /// </summary>
     private static bool Matches(string name, byte[] sent, byte[] back) =>
         name[0] is 'A' or 'B' or 'C'
-            ? back.AsSpan(0, 9).SequenceEqual(sent.AsSpan(0, 9)) && back.AsSpan(0x35, 4).SequenceEqual(sent.AsSpan(0x35, 4))
+            ? back.AsSpan(0, 9).SequenceEqual(sent.AsSpan(0, 9)) &&
+              back.AsSpan(LayerInfo.VEdit2Offset, 4).SequenceEqual(sent.AsSpan(LayerInfo.VEdit2Offset, 4))
             : back.AsSpan().SequenceEqual(sent);
-
-    private static int BlockAddress(int kit, string name) =>
-        KitMap.KitBase(kit) + KitMap.KitBlocks.First(b => b.Name == name).Offset;
-
-    private Task<byte[]> ReadBlockAsync(int kit, string name, CancellationToken ct = default) =>
-        ReadAsync(BlockAddress(kit, name), KitMap.KitBlocks.First(b => b.Name == name).Size, ct);
-
-    private async Task<KitCategory> ProbeAsync(KitRowViewModel row, CancellationToken ct)
-    {
-        if (row.Name == "User Kit") return KitCategory.UserKit;
-        var banks = new List<int>();
-        foreach (var name in ProbeBlocks)
-        {
-            var block = KitMap.KitBlocks.First(b => b.Name == name);
-            banks.Add(Layer.Decode(await ReadAsync(KitMap.KitBase(row.Number) + block.Offset, block.Size, ct)).Bank);
-        }
-        return KitClassifier.Classify(row.Name, row.SubName, banks);
-    }
-
-    private async Task<byte[]> ReadAsync(int address, int size, CancellationToken ct) =>
-        await _client!.ReadAsync(address, size, ct)
-        ?? throw new TimeoutException($"No answer from the module (address {address:X}).");
 
     private static bool Confirm(string message) =>
         MessageBox.Show(message, "KitRoles", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK;
@@ -313,10 +324,8 @@ public partial class MainViewModel : ObservableObject
 
     private void UpdateSummary()
     {
-        var relevant = Kits.Where(k => !k.IsBlank).ToList();
-        Status = $"{relevant.Count(k => k.State == KitState.UpToDate)} deep scanned · " +
-                 $"{relevant.Count(k => k.State == KitState.Changed)} changed · " +
-                 $"{relevant.Count(k => k.State == KitState.NotScanned)} not scanned · " +
-                 $"{Kits.Count(k => k.State == KitState.Error)} errors · {Kits.Count - relevant.Count} blank user kits";
+        Status = $"{Kits.Count(k => k.State == KitState.UpToDate)} kits scanned · " +
+                 $"{Kits.Count(k => k.IsBlank)} blank user kits · {Kits.Count(k => k.State == KitState.Error)} errors" +
+                 (_partialReads ? "" : " · fast reads unavailable, using full blocks");
     }
 }

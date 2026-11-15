@@ -6,7 +6,7 @@ public static class KitClassifier
 {
     /// <summary>
     /// Classifies a kit by the instrument banks it uses: expansion banks are 2010+, kit pack banks 300-399.
-    /// Works with all banks of a deep scan, or with a few probed layers (kick, snare, AUX1).
+    /// Uses the banks of all scanned layers.
     /// </summary>
     public static KitCategory Classify(string name, string subName, IEnumerable<int> banks)
     {

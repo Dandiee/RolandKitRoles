@@ -5,13 +5,19 @@ namespace KitRoles.Model;
 public enum Role { Keep, Snare, Tom1, Tom2, Tom3, Tom4, Crash1, Crash2, Ride, China, Splash, ClosedHiHat }
 
 /// <summary>A physical pad: head/rim unit indices (0-based, see KitMap.Units) and its KitPad index (1-based).</summary>
-public record PadRef(string Label, int Head, int Rim, int Pad);
-
-/// <summary>What will be written for one AUX pad of one kit (Blocks empty = already in place).</summary>
-public record PadChange(string Text, Dictionary<string, byte[]> Blocks);
+public record PadRef(string Label, int Head, int Rim, int Pad)
+{
+    /// <summary>All blocks that make up this pad: unit commons, layers A/B/C of head and rim, KitPad.</summary>
+    public IEnumerable<string> Blocks =>
+        new[] { $"uc{Head + 1}", $"uc{Rim + 1}", $"pad{Pad}" }
+            .Concat("ABC".SelectMany(l => new[] { $"{l}{Head + 1}", $"{l}{Rim + 1}" }));
+}
 
 /// <summary>Adjusts a copied layer block; gets the target block name (e.g. "A23") and the block.</summary>
-internal delegate void LayerPatch(string blockName, byte[] block);
+public delegate void LayerPatch(string blockName, byte[] block);
+
+/// <summary>What one AUX role means for one kit: copy Source onto Target, then apply Patch to the layers.</summary>
+public record PadPlan(PadRef Target, PadRef Source, string Text, bool AlreadyDone, LayerPatch? Patch);
 
 public static class RolePlanner
 {
@@ -25,7 +31,6 @@ public static class RolePlanner
     /// <summary>Where to look for a kit's own China/splash, in order of preference.</summary>
     private static readonly PadRef[] SearchOrder = [Crash1, Crash2, Ride, .. Aux, HiHat, Snare, Tom1, Tom2, Tom3, Tom4];
 
-    private const int VEdit2 = 0x31 + 4; // V-EDIT parameter 2 = fixed position for hi-hat sounds on non-HH pads
     private const int HiHatClosed = 2;
 
     public static string Label(this Role r) => r switch
@@ -34,8 +39,8 @@ public static class RolePlanner
         Role.Crash1 => "Crash 1", Role.Crash2 => "Crash 2", Role.ClosedHiHat => "Closed hi-hat", _ => r.ToString(),
     };
 
-    /// <summary>Plans one AUX pad (0..3). Returns null for Keep.</summary>
-    public static PadChange? Plan(KitSnapshot s, int auxIndex, Role role)
+    /// <summary>Picks the source pad for one AUX pad (0..3) from the kit overview. Returns null for Keep.</summary>
+    public static PadPlan? Choose(KitInfo k, int auxIndex, Role role)
     {
         var target = Aux[auxIndex];
         var (source, text, patch) = role switch
@@ -50,38 +55,56 @@ public static class RolePlanner
             Role.Crash2 => (Crash2, "Crash 2", null),
             Role.Ride => (Ride, "Ride", null),
             Role.ClosedHiHat => (HiHat, "closed hi-hat", (LayerPatch)CloseHiHat),
-            Role.China => FindOrDefault(s, target, InstType.China, "Mn Bz Trad Ch", "Mn Bz Trad ChE"),
-            Role.Splash => FindOrDefault(s, target, InstType.Splash, "Mn Bz Dual Sp", "Mn Bz Dual SpE"),
+            Role.China => FindOrDefault(k, target, InstType.China, "Mn Bz Trad Ch", "Mn Bz Trad ChE"),
+            Role.Splash => FindOrDefault(k, target, InstType.Splash, "Mn Bz Dual Sp", "Mn Bz Dual SpE"),
             _ => throw new ArgumentOutOfRangeException(nameof(role)),
         };
         if (source is null) return null;
+        bool done = IsDone(k, source, target, patch);
+        return new PadPlan(target, source, done ? $"{target.Label} already {text}" : $"{target.Label} ← {text}", done, patch);
+    }
 
-        var blocks = new Dictionary<string, byte[]>
-        {
-            [$"uc{target.Head + 1}"] = s.Block($"uc{source.Head + 1}"),
-            [$"uc{target.Rim + 1}"] = s.Block($"uc{source.Rim + 1}"),
-            [$"pad{target.Pad}"] = s.Block($"pad{source.Pad}"),
-        };
-        foreach (var layer in "ABC")
-        {
-            blocks[$"{layer}{target.Head + 1}"] = s.Block($"{layer}{source.Head + 1}");
-            blocks[$"{layer}{target.Rim + 1}"] = s.Block($"{layer}{source.Rim + 1}");
-        }
-        if (patch is not null)
-            foreach (var (name, block) in blocks.Where(kv => kv.Key[0] is 'A' or 'B' or 'C')) patch(name, block);
+    /// <summary>Builds the target blocks from the full source blocks.</summary>
+    public static Dictionary<string, byte[]> Build(PadPlan plan, Func<string, byte[]> sourceBlock)
+    {
+        var blocks = plan.Target.Blocks.Zip(plan.Source.Blocks)
+            .ToDictionary(p => p.First, p => (byte[])sourceBlock(p.Second).Clone());
+        if (plan.Patch is not null)
+            foreach (var (name, block) in blocks.Where(kv => kv.Key[0] is 'A' or 'B' or 'C')) plan.Patch(name, block);
+        return blocks;
+    }
 
-        // Only write blocks that differ from what the kit has now.
-        var changed = blocks.Where(kv => !kv.Value.AsSpan().SequenceEqual(s.Block(kv.Key))).ToDictionary();
-        return new PadChange(changed.Count == 0 ? $"{target.Label} already {text}" : $"{target.Label} ← {text}", changed);
+    /// <summary>True if the target's layers already match what copying + patching the source would give.</summary>
+    private static bool IsDone(KitInfo k, PadRef source, PadRef target, LayerPatch? patch)
+    {
+        foreach (var (src, dst) in new[] { (source.Head, target.Head), (source.Rim, target.Rim) })
+            for (int l = 0; l < 3; l++)
+            {
+                var expected = k.Get(src, l);
+                if (patch is not null)
+                {
+                    // Run the patch on a minimal block holding just the fields LayerInfo knows about.
+                    var b = new byte[LayerInfo.VEdit2Offset + 4];
+                    b[0] = (byte)(expected.On ? 1 : 0);
+                    KitMap.SetNib(b, 0x01, expected.Inst);
+                    KitMap.SetNib(b, 0x05, expected.Bank);
+                    KitMap.SetNib(b, LayerInfo.VEdit2Offset, expected.VEdit2);
+                    patch($"{"ABC"[l]}{dst + 1}", b);
+                    expected = LayerInfo.Decode(b);
+                }
+                var actual = k.Get(dst, l);
+                if (expected.On != actual.On || (expected.On && expected != actual)) return false;
+            }
+        return true;
     }
 
     /// <summary>Uses the kit's own China/splash pad; otherwise Crash 1's setup with a default built-in sound.</summary>
-    private static (PadRef?, string, LayerPatch?) FindOrDefault(KitSnapshot s, PadRef target, InstType type,
+    private static (PadRef?, string, LayerPatch?) FindOrDefault(KitInfo k, PadRef target, InstType type,
         string headName, string edgeName)
     {
         var label = type.ToString();
-        if (HasType(s, target, type)) return (target, label, null);
-        if (SearchOrder.FirstOrDefault(p => p != target && HasType(s, p, type)) is { } own)
+        if (HasType(k, target, type)) return (target, label, null);
+        if (SearchOrder.FirstOrDefault(p => p != target && HasType(k, p, type)) is { } own)
             return (own, $"{label} (from {own.Label})", null);
 
         int head = InstrumentCatalog.FindBuiltIn(headName), edge = InstrumentCatalog.FindBuiltIn(edgeName);
@@ -95,11 +118,11 @@ public static class RolePlanner
         });
     }
 
-    private static bool HasType(KitSnapshot s, PadRef pad, InstType type) =>
-        Enumerable.Range(0, 3).Select(l => s.GetLayer(pad.Head, l)).Any(l => l.On && l.Type == type);
+    private static bool HasType(KitInfo k, PadRef pad, InstType type) =>
+        Enumerable.Range(0, 3).Select(l => k.Get(pad.Head, l)).Any(l => l.On && l.Type == type);
 
     private static void CloseHiHat(string name, byte[] layer)
     {
-        if (Layer.Decode(layer).Type == InstType.HiHat) KitMap.SetNib(layer, VEdit2, HiHatClosed);
+        if (LayerInfo.Decode(layer).Type == InstType.HiHat) KitMap.SetNib(layer, LayerInfo.VEdit2Offset, HiHatClosed);
     }
 }

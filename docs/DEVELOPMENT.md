@@ -136,8 +136,14 @@ The module answers at roughly MIDI cable speed, about 3 KB/s. Cost is proportion
 | One full kit (148 blocks, 22.5 KB) | ~8 s |
 | All 200 kits | ~27 min |
 
-Requesting many blocks with one RQ1 works but is no faster, so the app uses documented per-block reads.
-Over 200 full kit reads there were zero failed blocks.
+Requesting many blocks with one RQ1 works but is no faster. Over 200 full kit reads there were zero failed blocks.
+
+**Partial reads (verified, undocumented).** The PDF says reads must use a block's start address and full size, but
+the module also answers small reads inside a block: 9 bytes in ~3 ms, 4 bytes in ~1 ms (vs ~80 ms for the whole
+209-byte layer). The app relies on this for scanning: per layer it reads bytes 0-8 (switch, instrument, bank) and
+V-EDIT 2. In the app this takes ~1.1 s per kit (168 small requests; the C# MIDI path has more per-message overhead
+than the Python tools). Checked against full-block data: 8736 layers of 104 kits, zero differences. If a partial
+read ever goes unanswered (e.g. a future firmware), the app switches to whole-block reads for the session.
 
 ### 4.6 Writing (**verified**)
 
@@ -165,10 +171,10 @@ unconfirmed, probably half open or pressed). 0 on factory AUX hi-hats, presumabl
 4. Otherwise built-in. A user made kit built from built-in sounds therefore counts as built-in (intended: the
    category describes where the sounds come from).
 
-With a deep scan, all banks of the kit are used. Without one, the app probes only three layer blocks (kick,
-snare and AUX1 layer A, about 0.2 s per kit). Against a full scan, the probe classified 196 of 200 kits correctly;
-the misses were user edited copies of pack kits, mostly caught by the sub name rule. After the factory reset the
-probe got all 200 right (1-70 built-in, 71-84 expansion, 85-104 kit packs, 105-200 user kits).
+The app classifies from the banks of all 84 layers of its scan. History: an earlier version probed only three
+layer blocks (kick, snare and AUX1 layer A); that probe got 196 of 200 kits right (the misses were user edited
+copies of pack kits). After the factory reset the layout was 1-70 built-in, 71-84 expansion, 85-104 kit packs,
+105-200 user kits.
 
 Header-only signals (kit color, bus send levels) also differ between groups but can be changed by the user, so
 they are not used.
@@ -222,14 +228,14 @@ the V51 Editor (available in Roland Cloud, not installed), the expansion downloa
 
 | File | Role |
 |---|---|
-| `Midi/KitMap.cs` | Address map, 7-bit conversion, nibble encode/decode, list of the 148 kit blocks, unit names |
+| `Midi/KitMap.cs` | Address map, 7-bit conversion, nibble encode/decode, the 148 kit blocks by name, unit names |
 | `Midi/V51Client.cs` | DryWetMIDI wrapper: Identity, `ReadAsync` (RQ1, 1 s timeout, one retry, checksum check), `WriteAsync` (DT1 + 50 ms). One request at a time via a semaphore |
 | `Model/InstrumentCatalog.cs` | Loads embedded `instruments.json`; name, type, bank labels, lookup by name |
-| `Model/KitSnapshot.cs` | Raw blocks of a kit (hex strings), decoding of names and layers, category from all banks |
+| `Model/KitInfo.cs` | `LayerInfo` (switch, instrument, bank, V-EDIT 2), `KitInfo` (header + 84 layers, names, category), `KitSnapshot` (raw blocks for backups) |
 | `Model/KitCategory.cs` | Category enum and the classification rule |
-| `Model/KitCache.cs` | JSON persistence in `data/`: kit snapshots, header index, apply backups |
-| `Model/RolePlanner.cs` | Roles, pad references, which blocks to copy and how to patch them |
-| `ViewModels/MainViewModel.cs` | Connect, refresh, deep scan, apply, undo, selection, preview, per-kit error handling |
+| `Model/KitCache.cs` | JSON persistence in `data/`: `kits.json` and apply backups |
+| `Model/RolePlanner.cs` | Roles, pad references; `Choose` (source pad and preview from a scan), `Build` (blocks to write) |
+| `ViewModels/MainViewModel.cs` | Connect, refresh, scan (with partial-read fallback), apply, undo, selection, preview, per-kit error handling |
 | `ViewModels/KitRowViewModel.cs` | One kit row: state, category, AUX summary, pad details, plan text |
 | `ViewModels/KitGroupViewModel.cs` | Group checkbox (checked / unchecked / mixed) |
 | `ViewModels/AuxRoleViewModel.cs` | One AUX role dropdown |
@@ -237,39 +243,41 @@ the V51 Editor (available in Roland Cloud, not installed), the expansion downloa
 
 ### 7.3 Data on disk (`data/` next to the exe)
 
-- `data/kits/kitNNN.json`: deep scan of one kit: `{ kit, scannedAt, blocks: { name: hex } }`. Same format as the
-  Python `scanall.py` output.
-- `data/index.json`: per kit the last seen header (hex of the common block) and category. Lets startup skip the
-  category probe for unchanged kits.
-- `data/backups/<yyyyMMdd-HHmmss>/kitNNN.json`: full kit snapshot taken right before an apply.
+- `data/kits.json`: per scanned kit the header (hex of the common block), scan time and 84 layers
+  (`on`, `inst`, `bank`, `vEdit2`, index = unit * 3 + layer). Category, names and previews are derived from this.
+- `data/backups/<yyyyMMdd-HHmmss>/kitNNN.json`: the blocks an apply changed, as they were before
+  (`{ kit, scannedAt, blocks: { name: hex } }`).
+- Older versions wrote `data/kits/` and `data/index.json`; they are no longer used.
 
 ### 7.4 Workflows
 
-**Startup / Refresh.** Connect (Identity). Read the header of all 200 kits. Per kit:
-- deep scan exists and header equals its common block: state UpToDate (green check), category from the deep scan;
-- otherwise state Changed (orange) or NotScanned (grey); category from `index.json` if the header is unchanged,
-  else from the 3-block probe.
+**Startup / Refresh.** Connect (Identity). Read the header of all 200 kits (~15 s). A kit whose header equals the
+cached one keeps its cached data. A kit named "User Kit" is shown as a blank user kit and not scanned. Every other
+kit (new or header changed) is scanned: instrument, bank and V-EDIT 2 of all 84 layers via partial reads. The first
+start therefore takes about two minutes, later starts about 15 s plus ~1 s per changed kit.
 
-Only header changes are detected. Sound tweaks that leave the header alone keep the green check. This is accepted
-because apply always re-reads kits live.
+Only header changes are detected automatically. After editing sounds on the module, check those kits and use
+**Rescan checked**. Apply always scans the kit fresh, so a stale cache cannot cause a wrong write.
 
-**Deep scan checked.** Reads all 148 blocks of each checked kit, saves the snapshot, updates the row.
+The 3-block category probe of earlier versions is gone: the scan sees all banks, which is both faster and exact.
 
 **Apply to checked kits.** After a confirmation dialog, per kit:
-1. Deep read the kit live (about 8 s).
-2. Save it as a backup in a new session folder.
-3. Plan the changes with `RolePlanner` on the fresh snapshot; only blocks that differ are written.
-4. `WriteKitAsync`: write each block, read it back, compare with `Matches`. Layer blocks must keep bytes 0x00-0x08
+1. Read the header and scan the kit fresh.
+2. `RolePlanner.Choose` picks the source pad per AUX role from the scan; roles already in place are skipped.
+3. Read the full blocks of the target and source pads (up to 9 + 9 blocks).
+4. `RolePlanner.Build` copies source to target and patches the layers; only blocks that differ are kept.
+5. Save those target blocks as they are now in a new backup session.
+6. `WriteKitAsync`: write each block, read it back, compare with `Matches`. Layer blocks must keep bytes 0x00-0x08
    (switch, instrument, bank) and V-EDIT 2 (0x35-0x38) exactly; other differences are accepted as module
    adjustments. Non-layer blocks must match exactly.
-5. On any failure, blocks already written are written back from the backup, the kit is marked red with the
+7. On any failure, blocks already written are written back from the backup, the kit is marked red with the
    message (tooltip) and the run continues with the next kit. Writing a kit is not cancellable, so cancel only
    takes effect between kits. A kit is never left half written.
-6. The snapshot is updated with what the module actually stored and saved as the new cache.
+8. Scan the kit again and store the result.
 
-**Undo last apply.** Takes the newest backup session, reads the 36 AUX related blocks of each kit
-(uc21-28, A/B/C21-28, pad11-14), writes back those that differ, updates the cache, then deletes the session if
-everything succeeded. Repeating it walks back through older sessions.
+**Undo last apply.** Takes the newest backup session; per kit it reads the backed-up blocks live, writes back those
+that differ, rescans the kit, then deletes the session if everything succeeded. Repeating it walks back through
+older sessions.
 
 ### 7.5 Role rules (`RolePlanner`)
 
@@ -286,8 +294,8 @@ KitPad block (at most 9 blocks).
 Plans are computed on the fresh snapshot of each kit, so an AUX pad that is being overwritten can still serve as
 the source for another AUX pad in the same apply (it uses the old content).
 
-Known cosmetic issue: because the module stores V-EDIT 1 = 24 instead of 26 for some closed hi-hats, the preview
-of an already converted kit still says "AUX1 <- closed hi-hat" instead of "already". Re-applying is harmless.
+"Already in place" is judged on switch, instrument, bank and V-EDIT 2 of all layers, so module adjustments to
+other values (such as V-EDIT 1 for a closed hi-hat) do not make a finished kit look unfinished.
 
 ### 7.6 Build and publish
 
@@ -332,11 +340,10 @@ Paths in the scripts assume they are run from `tools/` and write to `../scratch/
 
 ## 10. Open questions and next steps
 
-1. Do SysEx writes survive a power cycle? Apply to one kit, power cycle, Refresh/deep scan that kit.
+1. Do SysEx writes survive a power cycle? Apply to one kit, power cycle, then check it and use Rescan checked.
 2. Does the module send DT1 by itself when editing on the unit ("Transmit Edit Data")? Would allow live cache sync.
 3. Meaning of hi-hat V-EDIT 2 = 1 (and other values), and whether a role for open hi-hat is wanted.
 4. Names for downloaded expansion and kit pack instruments (see 6.4).
 5. Does moving a pack to another slot keep its bank number?
-6. Make the preview treat module-adjusted values as "already applied" (see 7.5).
-7. Configurable default China/splash, possibly more roles.
-8. First GitHub release with the published exe.
+6. Configurable default China/splash, possibly more roles.
+7. Speed up scanning in the app (C# per-message overhead; the Python tools need ~0.35 s per kit).

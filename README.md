@@ -56,10 +56,9 @@ with the same tuning, volume and effect settings the kit's author picked.
    module backup is the safest starting point.
 2. Download [the latest KitRoles.exe](https://github.com/Dandiee/RolandKitRoles/releases/latest/download/KitRoles.exe) (all versions are on the [releases page](https://github.com/Dandiee/RolandKitRoles/releases)) and run it.
    No installation needed. It stores its data in a `data` folder next to the exe, so keep them together.
-3. The tool connects and reads the header of all 200 kits (about 15 seconds).
-4. Check the kits you care about (the group checkboxes help) and run **Deep scan checked**. This reads everything
-   in those kits and takes about 8 seconds per kit, because the module sends data at MIDI speed. It only needs to
-   be done once; later starts detect which kits changed and only those need a new scan.
+3. The tool connects, reads all 200 kits and shows what every pad plays. The first start takes about two minutes;
+   after that it only rescans kits whose name or main settings changed, so starting takes about 15 seconds.
+4. Check the kits you want to change. The group checkboxes (built-in, expansion, kit packs, user kits) help.
 5. Pick the AUX roles, check the preview column, and press **Apply to checked kits**.
 6. If you do not like the result, **Undo last apply** restores the AUX pads. Pressing it again goes back one more
    apply.
@@ -67,7 +66,8 @@ with the same tuning, volume and effect settings the kit's author picked.
 ## Safety
 
 - Scanning only reads from the module.
-- Before writing, each kit is read again live from the module and saved as a backup under `data\backups`.
+- Before writing, each kit is read again from the module, and the pad settings about to change are saved as a
+  backup under `data\backups`.
 - Only the AUX pad settings that actually change are written. Every written block is read back and checked.
 - If a check fails, the kit's AUX pads are restored from that backup and the kit is marked with an error.
 
@@ -76,8 +76,8 @@ with the same tuning, volume and effect settings the kit's author picked.
 - Instrument names for downloaded Roland Cloud expansions and kit packs are not available to the tool, so those
   sounds show up as "Expansion 2012 #4" and similar. Roles still work for them.
 - Only the four AUX pads can be given a role. The main pads are never changed.
-- Changes you make on the module that do not touch the kit's name or main settings are not detected automatically.
-  This only affects the preview; applying always reads the kit fresh before writing.
+- Sound changes you make on the module that do not touch the kit's name or main settings are not detected
+  automatically. Use **Rescan checked** for those kits. Applying always reads the kit fresh before writing.
 
 ## Building from source
 

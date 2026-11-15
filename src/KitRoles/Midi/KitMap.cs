@@ -13,7 +13,6 @@ public static class KitMap
     ];
 
     public const int KitCount = 200;
-    public static readonly int CurrentKitAddress = 0;
 
     /// <summary>Converts an address written in the PDF (e.g. 0x04000000) to a linear 7-bit value.</summary>
     public static int H(int pdfHex) =>
@@ -35,14 +34,19 @@ public static class KitMap
 
     public static int KitBase(int kit) => H(0x04000000) + (kit - 1) * H(0x040000);
 
-    public static readonly BlockDef Common = new("common", 0, H(0x141));
+    /// <summary>All 148 blocks of one kit, as listed in the MIDI implementation, by name.</summary>
+    public static readonly IReadOnlyDictionary<string, BlockDef> Blocks = BuildBlocks().ToDictionary(b => b.Name);
 
-    /// <summary>All 148 blocks of one kit, as listed in the MIDI implementation.</summary>
-    public static readonly IReadOnlyList<BlockDef> KitBlocks = BuildBlocks().ToList();
+    public static BlockDef Common => Blocks["common"];
+
+    public static int Address(int kit, string block) => KitBase(kit) + Blocks[block].Offset;
+
+    /// <summary>Layer block name, e.g. unit 22, layer 0 = "A23".</summary>
+    public static string LayerBlock(int unit, int layer) => $"{"ABC"[layer]}{unit + 1}";
 
     private static IEnumerable<BlockDef> BuildBlocks()
     {
-        yield return Common;
+        yield return new("common", 0, H(0x141));
         yield return new("midi", H(0x000200), H(0x154));
         yield return new("mcomp", H(0x000400), H(0x46));
         yield return new("meq", H(0x000500), H(0x2A));

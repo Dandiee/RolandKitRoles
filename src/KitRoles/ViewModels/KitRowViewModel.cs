@@ -4,7 +4,7 @@ using KitRoles.Model;
 
 namespace KitRoles.ViewModels;
 
-public enum KitState { NotScanned, UpToDate, Changed, Error }
+public enum KitState { NotScanned, UpToDate, Error }
 
 public record PadRow(string Pad, string A, string B, string C);
 
@@ -15,7 +15,6 @@ public partial class KitRowViewModel(int number) : ObservableObject
     [ObservableProperty] private bool _isChecked;
     [ObservableProperty] private string _name = "";
     [ObservableProperty] private string _subName = "";
-    [ObservableProperty] private string _header = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CategoryText))]
@@ -32,39 +31,39 @@ public partial class KitRowViewModel(int number) : ObservableObject
     [ObservableProperty] private IReadOnlyList<PadRow> _pads = [];
 
     public string CategoryText => Category.Label();
-    public KitSnapshot? Snapshot { get; private set; }
-    public bool IsBlank => Category == KitCategory.UserKit;
+    public KitInfo? Info { get; private set; }
+    public bool IsBlank => Name == "User Kit";
 
-    /// <summary>Takes over a deep scan (from cache or a fresh read).</summary>
-    public void ApplySnapshot(KitSnapshot snapshot)
+    /// <summary>Shows a scanned kit.</summary>
+    public void Apply(KitInfo info)
     {
-        Snapshot = snapshot;
-        Header = snapshot.Header;
-        Name = snapshot.Name;
-        SubName = snapshot.SubName;
-        Category = snapshot.Category;
-        ScannedAt = snapshot.ScannedAt;
+        Info = info;
+        Name = info.Name;
+        SubName = info.SubName;
+        Category = info.Category;
+        ScannedAt = info.ScannedAt;
         State = KitState.UpToDate;
         Error = null;
-        Aux1 = Describe(snapshot, 20);
-        Aux2 = Describe(snapshot, 22);
-        Aux3 = Describe(snapshot, 24);
-        Aux4 = Describe(snapshot, 26);
+        Aux1 = Describe(info, 20);
+        Aux2 = Describe(info, 22);
+        Aux3 = Describe(info, 24);
+        Aux4 = Describe(info, 26);
         Pads = Enumerable.Range(0, 28)
-            .Select(u => new PadRow(KitMap.Units[u], Cell(snapshot, u, 0), Cell(snapshot, u, 1), Cell(snapshot, u, 2)))
+            .Select(u => new PadRow(KitMap.Units[u], Cell(info, u, 0), Cell(info, u, 1), Cell(info, u, 2)))
             .ToList();
     }
 
-    /// <summary>Takes over a freshly read header and compares it with the deep scan.</summary>
+    /// <summary>Shows only the header (blank user kits are not scanned).</summary>
     public void ApplyHeader(byte[] common)
     {
-        Header = Convert.ToHexStringLower(common);
-        Name = KitSnapshot.DecodeName(common, 0, 16);
-        SubName = KitSnapshot.DecodeName(common, 16, 64);
+        Info = null;
+        Name = KitInfo.DecodeName(common, 0, 16);
+        SubName = KitInfo.DecodeName(common, 16, 64);
+        Category = KitCategory.UserKit;
+        State = KitState.NotScanned;
         Error = null;
-        State = Snapshot is null ? KitState.NotScanned
-            : Snapshot.Header == Header ? KitState.UpToDate
-            : KitState.Changed;
+        Aux1 = Aux2 = Aux3 = Aux4 = "";
+        Pads = [];
     }
 
     public void Fail(string message)
@@ -73,15 +72,11 @@ public partial class KitRowViewModel(int number) : ObservableObject
         Error = message;
     }
 
-    private static string Describe(KitSnapshot s, int unit)
-    {
-        var l = s.GetLayer(unit, 0);
-        return l.On && !l.IsEmpty ? l.Name : "";
-    }
+    private static string Describe(KitInfo k, int unit) => k.Get(unit, 0) is { IsActive: true } l ? l.Name : "";
 
-    private static string Cell(KitSnapshot s, int unit, int layer)
+    private static string Cell(KitInfo k, int unit, int layer)
     {
-        var l = s.GetLayer(unit, layer);
+        var l = k.Get(unit, layer);
         if (l.IsEmpty) return "";
         return l.On ? l.Name : $"({l.Name})";
     }
