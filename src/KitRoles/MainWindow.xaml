@@ -1,0 +1,193 @@
+﻿<Window x:Class="KitRoles.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:KitRoles.ViewModels"
+        Title="KitRoles · V51" Height="820" Width="1440" WindowStartupLocation="CenterScreen">
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <DockPanel Margin="0,0,0,10">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE839;" Margin="0,0,8,0" VerticalAlignment="Center">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="#E05A5A" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                                    <Setter Property="Foreground" Value="#5AC85A" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Text="{Binding Connection}" VerticalAlignment="Center" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal">
+                <Button Style="{StaticResource IconButton}" Tag="&#xE703;" Content="Connect" Command="{Binding ConnectCommand}" />
+                <Button Style="{StaticResource IconButton}" Tag="&#xE72C;" Content="Refresh" Command="{Binding RefreshCommand}"
+                        ToolTip="Reads every kit's header (~15 s): names, categories, what changed since the deep scan" />
+                <Button Style="{StaticResource IconButton}" Tag="&#xE8B7;" Content="Deep scan checked" Command="{Binding DeepScanCommand}"
+                        ToolTip="Reads everything of the checked kits (~8 s per kit)" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- Roles bar -->
+        <Border Grid.Row="1" Margin="0,0,0,10" Padding="10,8" CornerRadius="6" Background="#22FFFFFF">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE7A7;" Content="Undo last apply" Command="{Binding UndoCommand}"
+                            ToolTip="Restores the AUX pads of the most recent apply from its backup (repeat to go further back)" />
+                    <Button Style="{StaticResource IconButton}" Tag="&#xE74E;" Content="Apply to checked kits" Command="{Binding ApplyCommand}"
+                            Margin="0" ToolTip="Re-reads each checked kit, backs it up, writes the AUX roles and verifies them" />
+                </StackPanel>
+                <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE8D6;" VerticalAlignment="Center" Margin="0,0,10,0" />
+                <ItemsControl ItemsSource="{Binding Roles}" VerticalAlignment="Center">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,16,0">
+                                <TextBlock Text="{Binding Label}" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="SemiBold" />
+                                <ComboBox Width="150" ItemsSource="{x:Static vm:AuxRoleViewModel.Options}"
+                                          DisplayMemberPath="Label" SelectedValuePath="Value" SelectedValue="{Binding Role}" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </DockPanel>
+        </Border>
+
+        <!-- Selection bar -->
+        <DockPanel Grid.Row="2" Margin="0,0,0,8">
+            <TextBlock DockPanel.Dock="Right" Text="{Binding Selection}" Foreground="Gray" VerticalAlignment="Center" />
+            <TextBlock FontFamily="{StaticResource Icons}" Text="&#xE71C;" Foreground="Gray" VerticalAlignment="Center" Margin="0,0,10,0" />
+            <ItemsControl ItemsSource="{Binding Groups}" VerticalAlignment="Center">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox IsChecked="{Binding IsChecked}" Margin="0,0,18,0" MinWidth="0">
+                            <TextBlock>
+                                <Run Text="{Binding Label, Mode=OneWay}" />
+                                <Run Text="{Binding Count, Mode=OneWay, StringFormat=' ({0})'}" Foreground="Gray" />
+                            </TextBlock>
+                        </CheckBox>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button Style="{StaticResource IconButton}" Tag="&#xE895;" Content="Check kits needing a deep scan"
+                    Command="{Binding SelectNeedsScanCommand}" HorizontalAlignment="Left" />
+        </DockPanel>
+
+        <!-- Kit list + details -->
+        <Grid Grid.Row="3">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="520" />
+            </Grid.ColumnDefinitions>
+
+            <DataGrid ItemsSource="{Binding Kits}" SelectedItem="{Binding SelectedKit}" AutoGenerateColumns="False"
+                      IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="None" SelectionMode="Single">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="" Width="40">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}"
+                                          HorizontalAlignment="Center" MinWidth="0" Padding="0" />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Header="" Width="32">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock FontFamily="{StaticResource Icons}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="&#xE9CE;" />
+                                            <Setter Property="Foreground" Value="Gray" />
+                                            <Setter Property="ToolTip" Value="Not deep scanned" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding State}" Value="UpToDate">
+                                                    <Setter Property="Text" Value="&#xE73E;" />
+                                                    <Setter Property="Foreground" Value="#5AC85A" />
+                                                    <Setter Property="ToolTip" Value="Deep scanned, header unchanged" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding State}" Value="Changed">
+                                                    <Setter Property="Text" Value="&#xE7BA;" />
+                                                    <Setter Property="Foreground" Value="#E0A030" />
+                                                    <Setter Property="ToolTip" Value="Changed on the module since the deep scan" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding State}" Value="Error">
+                                                    <Setter Property="Text" Value="&#xEA39;" />
+                                                    <Setter Property="Foreground" Value="#E05A5A" />
+                                                    <Setter Property="ToolTip" Value="{Binding Error}" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="#" Binding="{Binding Number}" Width="44" />
+                    <DataGridTextColumn Header="Kit" Binding="{Binding Name}" Width="150" />
+                    <DataGridTextColumn Header="Category" Binding="{Binding CategoryText}" Width="95" />
+                    <DataGridTextColumn Header="Planned change" Binding="{Binding Plan}" Width="1.6*" />
+                    <DataGridTextColumn Header="AUX1" Binding="{Binding Aux1}" Width="*" />
+                    <DataGridTextColumn Header="AUX2" Binding="{Binding Aux2}" Width="*" />
+                    <DataGridTextColumn Header="AUX3" Binding="{Binding Aux3}" Width="*" />
+                    <DataGridTextColumn Header="AUX4" Binding="{Binding Aux4}" Width="*" />
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <GridSplitter Grid.Column="1" Width="8" HorizontalAlignment="Stretch" Background="Transparent" />
+
+            <DockPanel Grid.Column="2" DataContext="{Binding SelectedKit}">
+                <StackPanel DockPanel.Dock="Top" Margin="4,0,0,8">
+                    <TextBlock FontSize="20" FontWeight="SemiBold">
+                        <Run Text="{Binding Number, Mode=OneWay, StringFormat='{}{0:000}'}" Foreground="Gray" />
+                        <Run Text="{Binding Name, Mode=OneWay}" />
+                    </TextBlock>
+                    <TextBlock Text="{Binding SubName}" Foreground="Gray" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Foreground="Gray" FontSize="11"
+                               Text="{Binding ScannedAt, StringFormat='Deep scanned {0:yyyy-MM-dd HH:mm}', TargetNullValue='Not deep scanned'}" />
+                </StackPanel>
+                <DataGrid ItemsSource="{Binding Pads}" AutoGenerateColumns="False" IsReadOnly="True"
+                          HeadersVisibility="Column" GridLinesVisibility="None">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Pad" Binding="{Binding Pad}" Width="100" />
+                        <DataGridTextColumn Header="Layer A" Binding="{Binding A}" Width="*" />
+                        <DataGridTextColumn Header="Layer B" Binding="{Binding B}" Width="*" />
+                        <DataGridTextColumn Header="Layer C" Binding="{Binding C}" Width="*" />
+                    </DataGrid.Columns>
+                </DataGrid>
+            </DockPanel>
+        </Grid>
+
+        <!-- Status bar -->
+        <DockPanel Grid.Row="4" Margin="0,10,0,0">
+            <Button DockPanel.Dock="Right" Style="{StaticResource IconButton}" Tag="&#xE711;" Content="Cancel"
+                    Margin="0" Command="{Binding CancelCommand}" />
+            <ProgressBar DockPanel.Dock="Right" Width="240" Height="6" Value="{Binding Progress}" Margin="12,0,12,0" />
+            <TextBlock Text="{Binding Status}" VerticalAlignment="Center" />
+        </DockPanel>
+    </Grid>
+</Window>

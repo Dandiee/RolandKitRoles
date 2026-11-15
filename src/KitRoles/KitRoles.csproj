@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WPF0001: ThemeMode (built-in Fluent dark theme) is marked experimental -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <!-- Portable single exe: dotnet publish -c Release -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <!-- DryWetMIDI ships a macOS native lib as content; not needed on Windows -->
+  <Target Name="DropMacNative" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)Melanchall_DryWetMidi_Native64.dylib" />
+  </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\instruments.json" LogicalName="instruments.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Melanchall.DryWetMidi" Version="8.0.3" />
+  </ItemGroup>
+
+</Project>

@@ -426,3 +426,8 @@ FodyWeavers.xsd
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
+
+# Local working data of the Python tools and firmware images
+scratch/
+SystemProgram/
+*.TD0
